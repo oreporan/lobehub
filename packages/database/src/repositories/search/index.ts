@@ -2,6 +2,7 @@ import { and, eq, ne, sql } from 'drizzle-orm';
 
 import {
   agents,
+  chatGroups,
   documents,
   files,
   knowledgeBaseFiles,
@@ -18,6 +19,7 @@ export type SearchResultType =
   | 'pageContent'
   | 'agent'
   | 'topic'
+  | 'chatGroup'
   | 'file'
   | 'folder'
   | 'memory'
@@ -54,6 +56,12 @@ export interface AgentSearchResult extends BaseSearchResult {
   slug: string | null;
   tags: string[];
   type: 'agent';
+}
+
+export interface ChatGroupSearchResult extends BaseSearchResult {
+  avatar: string | null;
+  backgroundColor: string | null;
+  type: 'chatGroup';
 }
 
 export interface TopicSearchResult extends BaseSearchResult {
@@ -132,6 +140,7 @@ export type SearchResult =
   | PageSearchResult
   | PageContentSearchResult
   | AgentSearchResult
+  | ChatGroupSearchResult
   | TopicSearchResult
   | FileSearchResult
   | FolderSearchResult
@@ -183,6 +192,9 @@ export class SearchRepo {
     if ((!type || type === 'agent') && limits.agent > 0) {
       searchPromises.push(this.searchAgents(trimmedQuery, limits.agent));
     }
+    if ((!type || type === 'chatGroup') && limits.chatGroup > 0) {
+      searchPromises.push(this.searchChatGroups(trimmedQuery, limits.chatGroup));
+    }
     if ((!type || type === 'topic') && limits.topic > 0) {
       searchPromises.push(this.searchTopics(trimmedQuery, limits.topic, agentId));
     }
@@ -223,6 +235,7 @@ export class SearchRepo {
     contextType?: 'agent' | 'resource' | 'page',
   ): {
     agent: number;
+    chatGroup: number;
     file: number;
     folder: number;
     knowledgeBase: number;
@@ -236,6 +249,7 @@ export class SearchRepo {
     if (type) {
       return {
         agent: type === 'agent' ? baseLimit : 0,
+        chatGroup: type === 'chatGroup' ? baseLimit : 0,
         file: type === 'file' ? baseLimit : 0,
         folder: type === 'folder' ? baseLimit : 0,
         knowledgeBase: type === 'knowledgeBase' ? baseLimit : 0,
@@ -251,6 +265,7 @@ export class SearchRepo {
     if (contextType === 'page') {
       return {
         agent: 3,
+        chatGroup: 3,
         file: 3,
         folder: 3,
         knowledgeBase: 3,
@@ -266,6 +281,7 @@ export class SearchRepo {
     if (contextType === 'resource') {
       return {
         agent: 3,
+        chatGroup: 3,
         file: 6,
         folder: 6,
         knowledgeBase: 6,
@@ -281,6 +297,7 @@ export class SearchRepo {
     if (agentId || contextType === 'agent') {
       return {
         agent: 3,
+        chatGroup: 3,
         file: 3,
         folder: 3,
         knowledgeBase: 3,
@@ -295,6 +312,7 @@ export class SearchRepo {
     // General context: limit all types to 3
     return {
       agent: 3,
+      chatGroup: 3,
       file: 3,
       folder: 3,
       knowledgeBase: 3,
@@ -353,7 +371,7 @@ export class SearchRepo {
       .where(
         and(
           eq(agents.userId, this.userId),
-          sql`(${agents.title} @@@ ${bm25Query} OR ${agents.description} @@@ ${bm25Query} OR ${agents.slug} @@@ ${bm25Query} OR ${agents.tags} @@@ ${bm25Query})`,
+          sql`(${agents.title} @@@ ${bm25Query} OR ${agents.description} @@@ ${bm25Query} OR ${agents.slug} @@@ ${bm25Query} OR ${agents.tags} @@@ ${bm25Query} OR ${agents.systemRole} @@@ ${bm25Query})`,
         ),
       )
       .orderBy(sql`paradedb.score(${agents.id}) DESC`)
@@ -375,7 +393,7 @@ export class SearchRepo {
   }
 
   /**
-   * Search topics by title, content, historySummary (BM25)
+   * Search topics by title, content, description (BM25)
    */
   private async searchTopics(
     query: string,
@@ -400,7 +418,7 @@ export class SearchRepo {
       .where(
         and(
           eq(topics.userId, this.userId),
-          sql`(${topics.title} @@@ ${bm25Query} OR ${topics.content} @@@ ${bm25Query} OR ${topics.historySummary} @@@ ${bm25Query})`,
+          sql`(${topics.title} @@@ ${bm25Query} OR ${topics.content} @@@ ${bm25Query} OR ${topics.description} @@@ ${bm25Query})`,
         ),
       )
       .orderBy(sql`paradedb.score(${topics.id}) DESC`)
@@ -556,7 +574,7 @@ export class SearchRepo {
         and(
           eq(documents.userId, this.userId),
           eq(documents.fileType, 'custom/folder'),
-          sql`(${documents.title} @@@ ${bm25Query} OR ${documents.filename} @@@ ${bm25Query} OR ${documents.description} @@@ ${bm25Query})`,
+          sql`(${documents.title} @@@ ${bm25Query} OR ${documents.slug} @@@ ${bm25Query} OR ${documents.description} @@@ ${bm25Query})`,
         ),
       )
       .orderBy(sql`paradedb.score(${documents.id}) DESC`)
@@ -598,7 +616,7 @@ export class SearchRepo {
         and(
           eq(documents.userId, this.userId),
           eq(documents.fileType, 'custom/document'),
-          sql`(${documents.title} @@@ ${bm25Query} OR ${documents.filename} @@@ ${bm25Query})`,
+          sql`(${documents.title} @@@ ${bm25Query} OR ${documents.slug} @@@ ${bm25Query} OR ${documents.content} @@@ ${bm25Query})`,
         ),
       )
       .orderBy(sql`paradedb.score(${documents.id}) DESC`)
@@ -652,6 +670,46 @@ export class SearchRepo {
       relevance: row.relevance,
       title: row.title || 'Untitled Memory',
       type: 'memory' as const,
+      updatedAt: row.updatedAt,
+    }));
+  }
+
+  /**
+   * Search chat groups by title and description (BM25)
+   */
+  private async searchChatGroups(query: string, limit: number): Promise<ChatGroupSearchResult[]> {
+    const bm25Query = sanitizeBm25Query(query);
+
+    const rows = await this.db
+      .select({
+        avatar: chatGroups.avatar,
+        backgroundColor: chatGroups.backgroundColor,
+        createdAt: chatGroups.createdAt,
+        description: chatGroups.description,
+        id: chatGroups.id,
+        score: sql<number>`paradedb.score(${chatGroups.id})`,
+        title: chatGroups.title,
+        updatedAt: chatGroups.updatedAt,
+      })
+      .from(chatGroups)
+      .where(
+        and(
+          eq(chatGroups.userId, this.userId),
+          sql`(${chatGroups.title} @@@ ${bm25Query} OR ${chatGroups.description} @@@ ${bm25Query})`,
+        ),
+      )
+      .orderBy(sql`paradedb.score(${chatGroups.id}) DESC`)
+      .limit(limit);
+
+    return this.mapScoresToRelevance(rows).map((row) => ({
+      avatar: row.avatar,
+      backgroundColor: row.backgroundColor,
+      createdAt: row.createdAt,
+      description: row.description,
+      id: row.id,
+      relevance: row.relevance,
+      title: row.title || '',
+      type: 'chatGroup' as const,
       updatedAt: row.updatedAt,
     }));
   }

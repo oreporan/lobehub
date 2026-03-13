@@ -21,19 +21,7 @@ import {
   RelationshipEnum,
 } from '@lobechat/types';
 import type { AnyColumn, SQL } from 'drizzle-orm';
-import {
-  and,
-  asc,
-  cosineDistance,
-  desc,
-  eq,
-  ilike,
-  inArray,
-  isNotNull,
-  ne,
-  or,
-  sql,
-} from 'drizzle-orm';
+import { and, asc, cosineDistance, desc, eq, inArray, isNotNull, ne, or, sql } from 'drizzle-orm';
 
 import { merge } from '@/utils/merge';
 
@@ -55,6 +43,7 @@ import {
   userMemoriesPreferences,
 } from '../../schemas';
 import type { LobeChatDatabase } from '../../type';
+import { sanitizeBm25Query } from '../../utils/bm25';
 import { selectNonVectorColumns } from '../../utils/columns';
 import { TopicModel } from '../topic';
 
@@ -890,6 +879,7 @@ export class UserMemoryModel {
 
     const normalizedQuery = typeof q === 'string' ? q.trim() : '';
     const resolvedLayer = layer ?? LayersEnum.Context;
+    const bm25Query = normalizedQuery ? sanitizeBm25Query(normalizedQuery) : '';
 
     const conditions: Array<SQL | undefined> = [
       eq(userMemories.userId, this.userId),
@@ -898,11 +888,7 @@ export class UserMemoryModel {
         : undefined,
       eq(userMemories.memoryLayer, resolvedLayer),
       normalizedQuery
-        ? or(
-            ilike(userMemories.title, `%${normalizedQuery}%`),
-            ilike(userMemories.summary, `%${normalizedQuery}%`),
-            ilike(userMemories.details, `%${normalizedQuery}%`),
-          )
+        ? sql`(${userMemories.title} @@@ ${bm25Query} OR ${userMemories.summary} @@@ ${bm25Query} OR ${userMemories.details} @@@ ${bm25Query})`
         : undefined,
     ];
 
